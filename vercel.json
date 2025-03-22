@@ -1,0 +1,57 @@
+{
+  "rewrites": [
+    {
+      "source": "/",
+      "destination": "/index.html.br"
+    },
+    {
+      "source": "/(.*).css",
+      "destination": "/$1.css.br"
+    },
+    {
+      "source": "/(.*).js",
+      "destination": "/$1.js.br"
+    },
+    {
+      "source": "/(.*).html",
+      "destination": "/$1.html.br"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/index.html.br",
+      "headers": [
+        { "key": "Content-Encoding", "value": "br" },
+        { "key": "Content-Type", "value": "text/html" }
+      ]
+    },
+    {
+      "source": "/(.*).css.br",
+      "headers": [
+        { "key": "Content-Encoding", "value": "br" },
+        { "key": "Content-Type", "value": "text/css" }
+      ]
+    },
+    {
+      "source": "/(.*).js.br",
+      "headers": [
+        { "key": "Content-Encoding", "value": "br" },
+        { "key": "Content-Type", "value": "application/javascript" }
+      ]
+    },
+    {
+      "source": "/(.*).html.br",
+      "headers": [
+        { "key": "Content-Encoding", "value": "br" },
+        { "key": "Content-Type", "value": "text/html" }
+      ]
+    },
+    {
+      "source": "/files.zip",
+      "headers": [
+        { "key": "Content-Type", "value": "application/zip" },
+        { "key": "Content-Disposition", "value": "attachment" }
+      ]
+    }
+  ]
+}

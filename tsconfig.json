@@ -1,0 +1,17 @@
+{
+    "compilerOptions": {
+        "esModuleInterop": true,
+        "resolveJsonModule": true,
+        "noEmit": true,
+        "baseUrl": "./",
+        "jsx": "react-jsx",
+        "paths": {
+            "@lib/*": ["./src/lib/*"]
+        },
+        "moduleResolution": "Bundler",
+        "module": "Preserve",
+        "allowJs": true,
+        "allowImportingTsExtensions": true
+    },
+    "exclude": ["webpack.config.ts"]
+}
