@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 
 export default function HomePage() {
-    const featuredVersions = ['1.12.2', '1.8.8', '1.7.3', '1.5.2'];
+    const featuredVersions = ['1.12', '1.8', '1.7.3', '1.5.2', '1.6.4'];
 
     return (
         <div className="flex flex-col items-center justify-center p-8">

@@ -18,6 +18,7 @@ import { BrowserRouter, Routes, Route, Link } from "react-router-dom";
 import HomePage from "./pages/HomePage.tsx";
 import ClientPage from "./pages/ClientsPage.tsx";
 import getCatppuccinColor from '@lib/utils/getCatppuccinColor.ts';
+import supportedVersions from '@lib/clientVersions.ts';
 
 export default function App() {
     gsap.registerPlugin(ScrollTrigger);
@@ -47,7 +48,7 @@ export default function App() {
                                     className="backdrop-blur-sm"
                                 >
                                     <ul className="grid w-[400px] gap-3 p-4">
-                                        {['1.12.2', '1.8.8', '1.7.3', '1.5.2'].map((version) => (
+                                        {supportedVersions.map((version) => (
                                             <li key={version}>
                                                 <NavigationMenuLink asChild>
                                                     <Link

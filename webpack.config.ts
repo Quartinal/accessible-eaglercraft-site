@@ -100,7 +100,7 @@ export default {
             quality: 9,
             //addContentEncodingHeader: true
         }),
-        function() {
+        (function() {
             if (!process.env.ZIP_FILE_URL)
                 return new CopyWebpackPlugin({
                     patterns: [
@@ -108,7 +108,7 @@ export default {
                     ],
                 });
             else return null;
-        },
+        })(),
     ],
     module: {
         rules: [
