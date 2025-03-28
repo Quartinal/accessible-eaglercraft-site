@@ -107,7 +107,7 @@ export default {
                         { from: 'public', to: '.' },
                     ],
                 });
-            else return null;
+            else return undefined;
         })(),
     ],
     module: {
