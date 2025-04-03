@@ -5,6 +5,66 @@ import { cp, exists, mkdir, readdir, readFile, stat } from '@zenfs/core/promises
 import { IndexedDB } from '@zenfs/dom';
 import { Zip } from '@zenfs/archives';
 import supportedVersions from '@lib/clientVersions.ts';
+import 'animate.css';
+import { parse, serialize } from 'cookie-es';
+
+// Client usage tracking interface
+interface ClientUsageData {
+    version: string;
+    count: number;
+    lastUsed: number;
+    htmlFiles?: string[];
+}
+
+// Cookie management functions
+const COOKIE_NAME = 'eaglercraft_client_usage';
+const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
+
+const getClientUsageData = (): ClientUsageData[] => {
+    try {
+        const cookies = parse(document.cookie);
+        if (cookies[COOKIE_NAME]) {
+            return JSON.parse(decodeURIComponent(cookies[COOKIE_NAME]));
+        }
+    } catch (error) {
+        console.warn('Failed to parse client usage cookie:', error);
+    }
+    return [];
+};
+
+const saveClientUsageData = (usageData: ClientUsageData[]): void => {
+    try {
+        // Sort by most used and limit to 5 entries to keep cookie size reasonable
+        const sortedData = [...usageData].sort((a, b) => b.count - a.count).slice(0, 5);
+        document.cookie = serialize(
+            COOKIE_NAME,
+            encodeURIComponent(JSON.stringify(sortedData)),
+            { maxAge: COOKIE_MAX_AGE, path: '/' }
+        );
+    } catch (error) {
+        console.warn('Failed to save client usage cookie:', error);
+    }
+};
+
+const updateClientUsage = (version: string, htmlFiles: string[]): void => {
+    const usageData = getClientUsageData();
+    const existingEntryIndex = usageData.findIndex(entry => entry.version === version);
+
+    if (existingEntryIndex >= 0) {
+        usageData[existingEntryIndex].count++;
+        usageData[existingEntryIndex].lastUsed = Date.now();
+        usageData[existingEntryIndex].htmlFiles = htmlFiles;
+    } else {
+        usageData.push({
+            version,
+            count: 1,
+            lastUsed: Date.now(),
+            htmlFiles
+        });
+    }
+
+    saveClientUsageData(usageData);
+};
 
 // Find all HTML files in a directory structure
 const findAllHtmlFiles = async (basePath: string, currentPath: string = ''): Promise<string[]> => {
@@ -387,13 +447,25 @@ const processHtmlAndAssets = async (
 
 const loadClient = async (version: string): Promise<{ htmlFiles: string[], blobUrls: string[] }> => {
     try {
-        // Configure filesystem with IndexedDB storage
-        await configure({
-            mounts: {
-                '/eaglercraft-clients': IndexedDB,
-                '/tmp': InMemory
-            }
-        });
+        // Check if we have a configured filesystem
+        let needsConfiguration = true;
+        try {
+            // Test if filesystem is already configured
+            await exists('/eaglercraft-clients');
+            needsConfiguration = false;
+        } catch (e) {
+            needsConfiguration = true;
+        }
+
+        if (needsConfiguration) {
+            // Configure filesystem with IndexedDB storage
+            await configure({
+                mounts: {
+                    '/eaglercraft-clients': IndexedDB,
+                    '/tmp': InMemory
+                }
+            });
+        }
 
         // Check if we've already extracted this version and find HTML files
         const versionPath = `/eaglercraft-clients/${version}`;
@@ -420,41 +492,64 @@ const loadClient = async (version: string): Promise<{ htmlFiles: string[], blobU
             }
 
             const zipBuffer = await response.arrayBuffer();
-            const zipfs = await resolveMountConfig({ backend: Zip, data: zipBuffer });
-            mount('/tmp/files-zip', zipfs);
 
-            // Extract files
-            const rootEntries = await readdir('/tmp/files-zip');
-
-            for (const entry of rootEntries) {
+            try {
+                // First try to unmount if it exists (fix "mount point already exists" error)
                 try {
-                    const entryStats = await stat(`/tmp/files-zip/${entry}`);
+                    umount('/tmp/files-zip');
+                } catch (e) {
+                    // Ignore errors if mount point doesn't exist
+                }
 
-                    if (entryStats.isDirectory()) {
-                        // Find HTML files recursively
-                        const foundHtmlFiles = await findAllHtmlFiles(`/tmp/files-zip/${entry}`);
+                const zipfs = await resolveMountConfig({ backend: Zip, data: zipBuffer });
+                mount('/tmp/files-zip', zipfs);
 
-                        if (foundHtmlFiles.length > 0) {
-                            // Extract this version
-                            await mkdir(`/eaglercraft-clients/${entry}`, { recursive: true });
-                            await cp(`/tmp/files-zip/${entry}`, `/eaglercraft-clients/${entry}`, { recursive: true });
+                // Extract files
+                const rootEntries = await readdir('/tmp/files-zip');
 
-                            if (entry === version) {
-                                htmlFiles = foundHtmlFiles;
+                for (const entry of rootEntries) {
+                    try {
+                        const entryStats = await stat(`/tmp/files-zip/${entry}`);
+
+                        if (entryStats.isDirectory()) {
+                            // Find HTML files recursively
+                            const foundHtmlFiles = await findAllHtmlFiles(`/tmp/files-zip/${entry}`);
+
+                            if (foundHtmlFiles.length > 0) {
+                                // Extract this version
+                                await mkdir(`/eaglercraft-clients/${entry}`, { recursive: true });
+                                await cp(`/tmp/files-zip/${entry}`, `/eaglercraft-clients/${entry}`, { recursive: true });
+
+                                if (entry === version) {
+                                    htmlFiles = foundHtmlFiles;
+                                }
                             }
                         }
+                    } catch (error) {
+                        console.error(`Error processing ${entry}:`, error);
                     }
-                } catch (error) {
-                    console.error(`Error processing ${entry}:`, error);
                 }
-            }
 
-            umount('/tmp/files-zip');
+                // Unmount to clean up
+                umount('/tmp/files-zip');
+            } catch (error) {
+                console.error('Error mounting zip file:', error);
+                // Make sure to clean up
+                try {
+                    umount('/tmp/files-zip');
+                } catch (e) {
+                    // Ignore
+                }
+                throw error;
+            }
         }
 
         if (htmlFiles.length === 0) {
             throw new Error(`No HTML files found for version ${version}`);
         }
+
+        // Update usage tracking when we've successfully found HTML files
+        updateClientUsage(version, htmlFiles);
 
         // Process all HTML files and create blob URLs
         const blobUrls = await Promise.all(
@@ -483,6 +578,7 @@ export default function ClientPage() {
     const [isTransitioning, setIsTransitioning] = useState(false);
     const iframeRef = useRef<HTMLIFrameElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
+    const fsConfigured = useRef<boolean>(false);
 
     useEffect(() => {
         if (!version || !supportedVersions.includes(version)) {
@@ -497,12 +593,19 @@ export default function ClientPage() {
         linkEl.href = 'https://cdn.jsdelivr.net/npm/@south-paw/typeface-minecraft@1.0.0/index.min.css';
         document.head.appendChild(linkEl);
 
+        // Add animate.css
+        const animateCssLink = document.createElement('link');
+        animateCssLink.rel = 'stylesheet';
+        animateCssLink.href = 'https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css';
+        document.head.appendChild(animateCssLink);
+
         // Load the client
         loadClient(version)
             .then(({ htmlFiles, blobUrls }) => {
                 setHtmlFiles(htmlFiles);
                 setBlobUrls(blobUrls);
                 setLoading(false);
+                fsConfigured.current = true;
             })
             .catch(err => {
                 console.error(err);
@@ -519,9 +622,24 @@ export default function ClientPage() {
         };
 
         document.addEventListener('keydown', handleKeyDown);
+
+        // Cleanup function when component unmounts
         return () => {
             document.removeEventListener('keydown', handleKeyDown);
             document.head.removeChild(linkEl);
+            document.head.removeChild(animateCssLink);
+
+            // Clean up filesystem mounts when leaving the page
+            try {
+                // Make sure to clean up /tmp/files-zip mount if it exists
+                try {
+                    umount('/tmp/files-zip');
+                } catch (e) {
+                    // Ignore if not mounted
+                }
+            } catch (e) {
+                console.warn('Error unmounting filesystem:', e);
+            }
         };
     }, [version]);
 
@@ -543,7 +661,7 @@ export default function ClientPage() {
         setTimeout(() => {
             setCurrentIndex(nextIndex);
             setIsTransitioning(false);
-        }, 300);
+        }, 800); // Increased duration to match animate.css animation duration
     };
 
     const openInNewTab = () => {
@@ -553,31 +671,31 @@ export default function ClientPage() {
         if (!newWindow) return;
 
         newWindow.document.write(`
-            <html lang="en">
-                <head>
-                    <title>Minecraft ${version} - Client ${currentIndex + 1}</title>
-                    <style>
-                        body { margin: 0; padding: 0; overflow: hidden; }
-                        iframe { border: none; width: 100vw; height: 100vh; }
-                    </style>
-                </head>
-                <body>
-                    <iframe src="${blobUrls[currentIndex]}" allowfullscreen></iframe>
-                </body>
-            </html>
-        `);
+      <html lang="en">
+        <head>
+          <title>Minecraft ${version} - Client ${currentIndex + 1}</title>
+          <style>
+            body { margin: 0; padding: 0; overflow: hidden; }
+            iframe { border: none; width: 100vw; height: 100vh; }
+          </style>
+        </head>
+        <body>
+          <iframe src="${blobUrls[currentIndex]}" allowfullscreen></iframe>
+        </body>
+      </html>
+    `);
         newWindow.document.close();
     };
 
     if (error) {
         return (
             <div className="flex flex-col items-center justify-center p-8 h-[70vh]">
-                <div className="bg-ctp-surface0 p-8 rounded-xl max-w-xl text-center minecraft-font">
+                <div className="bg-ctp-surface0 p-8 rounded-xl max-w-xl text-center minecraft-font animate__animated animate__fadeIn">
                     <h2 className="text-2xl font-bold text-ctp-red mb-4">Error</h2>
                     <p className="text-ctp-text mb-6">{error}</p>
                     <button
                         onClick={() => navigate('/')}
-                        className="minecraft-button bg-ctp-blue px-6 py-2 rounded-none c-white font-medium hover:bg-ctp-lavender transition"
+                        className="minecraft-button bg-ctp-blue px-6 py-2 rounded-none c-white font-medium hover:bg-ctp-lavender"
                     >
                         Back to Home
                     </button>
@@ -589,10 +707,10 @@ export default function ClientPage() {
     if (loading) {
         return (
             <div className="flex flex-col items-center justify-center p-8 h-[70vh]">
-                <div className="bg-ctp-surface0 p-8 rounded-xl max-w-xl text-center minecraft-font">
+                <div className="bg-ctp-surface0 p-8 rounded-xl max-w-xl text-center minecraft-font animate__animated animate__fadeIn">
                     <h2 className="text-2xl font-bold text-ctp-blue mb-4">Loading Minecraft {version}</h2>
                     <div className="w-full bg-ctp-surface1 h-2 rounded-full overflow-hidden mb-4">
-                        <div className="h-full bg-ctp-green w-3/4 animate-pulse"></div>
+                        <div className="h-full bg-ctp-green w-3/4 animate__animated animate__pulse animate__infinite"></div>
                     </div>
                     <p className="text-ctp-subtext">This may take a few moments...</p>
                 </div>
@@ -603,7 +721,7 @@ export default function ClientPage() {
     return (
         <div className="flex flex-col h-screen max-h-[95vh]">
             {/* Control bar */}
-            <div className="flex justify-between items-center p-2 bg-ctp-crust">
+            <div className="flex justify-between items-center p-2 bg-ctp-crust animate__animated animate__fadeInDown">
                 <button
                     onClick={() => navigate('/')}
                     className="minecraft-button bg-ctp-surface0 px-4 py-1 rounded-none text-ctp-text text-sm"
@@ -617,18 +735,18 @@ export default function ClientPage() {
                             <button
                                 onClick={() => navigateClient(-1)}
                                 className={`minecraft-button bg-ctp-surface0 px-3 py-1 rounded-none mr-2 
-                                    ${isTransitioning ? 'opacity-50' : ''}`}
+                  ${isTransitioning ? 'opacity-50' : ''}`}
                                 disabled={isTransitioning}
                             >
                                 ◀
                             </button>
                             <span className="text-ctp-text px-2">
-                                Client {currentIndex + 1} of {blobUrls.length}
-                            </span>
+                Client {currentIndex + 1} of {blobUrls.length}
+              </span>
                             <button
                                 onClick={() => navigateClient(1)}
-                                className={`minecraft-button bg-ctp-surface0 px-3 py-1 rounded-none ml-2
-                                    ${isTransitioning ? 'opacity-50' : ''}`}
+                                className={`minecraft-button bg-ctp-surface0 px-3 py-1 rounded-none ml-2 
+                  ${isTransitioning ? 'opacity-50' : ''}`}
                                 disabled={isTransitioning}
                             >
                                 ▶
@@ -637,8 +755,8 @@ export default function ClientPage() {
                     )}
                     {blobUrls.length === 1 && (
                         <span className="text-ctp-text px-2 minecraft-font">
-                            Minecraft {version}
-                        </span>
+              Minecraft {version}
+            </span>
                     )}
                 </div>
 
@@ -660,11 +778,7 @@ export default function ClientPage() {
 
             {/* Game container */}
             <div ref={containerRef} className="flex-1 bg-black relative">
-                <div
-                    className={`absolute inset-0 transition-transform duration-300 ${
-                        isTransitioning ? 'scale-95 opacity-0' : 'scale-100 opacity-100'
-                    }`}
-                >
+                <div className="absolute inset-0">
                     {blobUrls[currentIndex] && (
                         <iframe
                             ref={iframeRef}
@@ -673,6 +787,7 @@ export default function ClientPage() {
                             title={`Minecraft ${version} - Client ${currentIndex + 1}`}
                             allowFullScreen={true}
                             onLoad={() => iframeRef.current?.focus()}
+                            className={isTransitioning ? 'animate__animated animate__zoomOut' : 'animate__animated animate__zoomIn'}
                         />
                     )}
                 </div>
@@ -685,21 +800,24 @@ export default function ClientPage() {
                     font-family: 'Minecraft', sans-serif;
                     letter-spacing: 1px;
                 }
-                
+
                 .minecraft-button {
-                    transform-origin: center bottom;
-                    transition: all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
                     box-shadow: 0 6px 0 #2d2d2d, 0 8px 10px rgba(0, 0, 0, 0.2);
                 }
-                
+
                 .minecraft-button:hover {
-                    transform: translateY(-4px) scale(1.05);
+                    animation: animate__pulse 0.5s;
                     box-shadow: 0 10px 0 #2d2d2d, 0 12px 16px rgba(0, 0, 0, 0.3);
                 }
-                
+
                 .minecraft-button:active {
-                    transform: translateY(2px) scale(0.95);
+                    animation: animate__bounceIn 0.2s;
                     box-shadow: 0 2px 0 #2d2d2d, 0 3px 6px rgba(0, 0, 0, 0.1);
+                }
+
+                /* Ensure animate.css animations work properly */
+                .animate__animated {
+                    --animate-duration: 0.8s;
                 }
             `}</style>
         </div>
